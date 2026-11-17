@@ -12,8 +12,16 @@ struct ContentView: View {
             if camera.permissionDenied {
                 permissionView
             } else {
-                CameraPreview(session: camera.session, mirrored: camera.isFrontCamera)
-                    .ignoresSafeArea()
+                Group {
+                    if camera.filter == .none {
+                        // 无滤镜：用系统预览层，帧率与能效最优
+                        CameraPreview(session: camera.session, mirrored: camera.isFrontCamera)
+                    } else {
+                        // 有滤镜：走 Core Image 渲染管道
+                        FilterPreviewView(controller: camera, mirrored: camera.isFrontCamera)
+                    }
+                }
+                .ignoresSafeArea()
 
                 ThirdsGrid()
                     .ignoresSafeArea()
@@ -28,7 +36,10 @@ struct ContentView: View {
 
                     hintBar
                         .padding(.horizontal, 20)
-                        .padding(.bottom, 14)
+                        .padding(.bottom, 10)
+
+                    filterBar
+                        .padding(.bottom, 12)
 
                     controlBar
                         .padding(.bottom, 28)
@@ -129,6 +140,31 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.2), value: camera.score.hints)
+    }
+
+    // MARK: - 滤镜
+
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(FilterPreset.allCases) { preset in
+                    let selected = camera.filter == preset
+                    Button {
+                        camera.filter = preset
+                    } label: {
+                        Text(preset.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(selected ? Color.black : Color.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(
+                                Capsule().fill(selected ? scoreColor : Color.black.opacity(0.38))
+                            )
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+        }
     }
 
     // MARK: - 控制栏

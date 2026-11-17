@@ -83,6 +83,18 @@ guangying-ios/
 | 平滑强度 | `smoothedTotal` 的 `0.72 / 0.28`，前者越大越稳但越迟钝 |
 | 自动快门阈值 | `CameraController.autoCaptureThreshold`，默认 85 |
 | 分析频率 | `analysisInterval`，默认 0.22 秒 |
+| 连拍张数 | `CameraController.burstCount`，默认 3 |
+| 滤镜方案 | `FilterPreset.swift`，改 `apply(to:)` 里的 CIFilter 链 |
+
+## 已实现的能力
+
+- **实时构图评分**：主体位置 / 水平 / 曝光 / 主体占比 四维加权，EMA 平滑
+- **三分辅助网格**：常驻叠加
+- **方向化引导**：「主体偏左，往右挪一点」「地平线倾斜 3°，端平手机」
+- **自动快门**：8 帧滚动窗口，最近 4 帧达标且当前为窗口峰值才触发
+- **连拍取最优**：一次快门拍 3 张，逐张评分，只保存最高分那张
+- **滤镜预览**：Core Image 内置滤镜，12fps 实时预览（无滤镜时用系统预览层保流畅）
+
 
 改完重新推代码，Actions 会重新出包。
 

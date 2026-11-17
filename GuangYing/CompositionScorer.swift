@@ -124,6 +124,67 @@ final class CompositionScorer {
         return result
     }
 
+    // MARK: - 单张照片评分（连拍取最优用）
+
+    /// 对一张已拍摄的照片评分，仅用于**同一组连拍之间排序**。
+    ///
+    /// 连拍间隔只有几十毫秒，曝光与光线几乎不变，所以这里不做曝光项计算
+    /// （固定为 1.0）。排名比较的是构图三项，结果与带曝光的排序一致。
+    /// 由于是单次比较，不使用指数平滑。
+    func evaluate(cgImage: CGImage, orientation: CGImagePropertyOrientation) -> CompositionScore {
+        var result = CompositionScore()
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
+        try? handler.perform([faceRequest, saliencyRequest, horizonRequest])
+
+        var subject: CGRect?
+        var faceCount = 0
+        if let faces = faceRequest.results, !faces.isEmpty {
+            faceCount = faces.count
+            subject = faces.max { lhs, rhs in
+                (lhs.boundingBox.width * lhs.boundingBox.height) < (rhs.boundingBox.width * rhs.boundingBox.height)
+            }?.boundingBox
+        }
+        if subject == nil,
+           let salient = saliencyRequest.results?.first,
+           let objects = salient.salientObjects, !objects.isEmpty {
+            subject = objects.max { lhs, rhs in
+                (lhs.boundingBox.width * lhs.boundingBox.height) < (rhs.boundingBox.width * rhs.boundingBox.height)
+            }?.boundingBox
+        }
+
+        if let box = subject {
+            result.hasSubject = true
+            result.placement = placementScore(for: box, faceCount: faceCount)
+            result.subjectSize = sizeScore(for: box)
+        } else {
+            result.placement = 0.45
+            result.subjectSize = 0.45
+        }
+
+        var angleDegrees = 0.0
+        if let horizon = horizonRequest.results?.first {
+            angleDegrees = Double(horizon.angle) * 180.0 / .pi
+            result.level = max(0, 1 - min(1, abs(angleDegrees) / 12.0))
+        } else {
+            result.level = 1.0
+        }
+        result.horizonAngle = angleDegrees
+
+        // 连拍之间曝光不变，固定中性值，只比较构图
+        result.exposure = 1.0
+
+        var weighted = result.placement * 0.36
+            + result.level * 0.20
+            + result.exposure * 0.26
+            + result.subjectSize * 0.18
+        if !result.hasSubject {
+            weighted = min(weighted, 0.62)
+        }
+        result.total = Int((max(0, min(1, weighted)) * 100).rounded())
+        return result
+    }
+
     // MARK: - 维度计算
 
     private func placementScore(for box: CGRect, faceCount: Int) -> Double {

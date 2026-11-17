@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import CoreImage
 import Foundation
 import ImageIO
 import Photos
@@ -25,6 +26,12 @@ final class CameraController: NSObject, ObservableObject {
     }
     @Published var toast: String?
 
+    /// 当前滤镜。为 `.none` 时走系统原生预览层（流畅），否则走 Core Image 渲染管道。
+    @Published var filter: FilterPreset = .none
+
+    /// 已渲染的滤镜帧。预览层直接订阅，避开 SwiftUI 状态刷新。
+    let frameSubject = PassthroughSubject<UIImage, Never>()
+
     /// 自动快门阈值
     var autoCaptureThreshold = 85
     /// 连续多少帧达标才认为「构图稳定」
@@ -46,8 +53,21 @@ final class CameraController: NSObject, ObservableObject {
     private var isConfigured = false
     private var lastAnalysisTime: CFTimeInterval = 0
     private var lastCaptureTime: CFTimeInterval = 0
+
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private var lastFilterRender: CFTimeInterval = 0
+    /// 滤镜预览帧率。12fps 足够看清色调，又不至于让 GPU 持续满载。
+    private let filterInterval: CFTimeInterval = 1.0 / 12.0
+    /// 预览渲染的最大边长，控制单帧渲染成本
+    private let previewMaxDimension: CGFloat = 900
     /// 最近若干帧的分数，用于「稳定判定 + 窗口取最优」
     private var recentScores: [Int] = []
+    /// 连拍缓存：(唯一 ID, JPEG 数据)
+    private var burstPhotos: [(id: Int64, data: Data)] = []
+    /// 一次连拍要收几张
+    private let burstCount = 3
+    /// 本次连拍是否已结算，防止超时与回调重复处理
+    private var burstResolved = false
 
     /// 分析节流间隔（秒）。每帧都推理会明显发热掉帧。
     private let analysisInterval: CFTimeInterval = 0.22
@@ -169,20 +189,78 @@ final class CameraController: NSObject, ObservableObject {
 
     // MARK: - 拍照
 
+    /// 连拍取最优：一次拍 3 张，逐张评分，只保存最高分那一张。
+    ///
+    /// 单张快门受手抖影响很大；连拍三张再挑，命中「构图最好的那一瞬间」的概率
+    /// 明显更高，而用户只感知为「按了一次快门」。
     func capturePhoto() {
         let now = CACurrentMediaTime()
-        guard now - lastCaptureTime > 0.8 else { return }
+        guard now - lastCaptureTime > 0.9 else { return }
         lastCaptureTime = now
+
+        burstPhotos.removeAll()
+        burstResolved = false
+        isCapturing = true
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            let settings = AVCapturePhotoSettings()
-            DispatchQueue.main.async { self.isCapturing = true }
-            self.photoOutput.capturePhoto(with: settings, delegate: self)
+            for _ in 0..<self.burstCount {
+                let settings = AVCapturePhotoSettings()
+                self.photoOutput.capturePhoto(with: settings, delegate: self)
+            }
+        }
+
+        // 兜底：有的帧可能回调失败，不能一直卡在 isCapturing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self, self.isCapturing, !self.burstResolved else { return }
+            self.finishBurst()
         }
     }
 
-    private func savePhotoData(_ data: Data) {
+    /// 从连拍缓存里挑出构图分数最高的一张存盘。
+    private func finishBurst() {
+        guard !burstResolved else { return }
+        burstResolved = true
+
+        let photos = burstPhotos
+        burstPhotos.removeAll()
+
+        guard !photos.isEmpty else {
+            isCapturing = false
+            toast = "拍照失败，请重试"
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 独立实例：VNRequest 不保证并发安全，不能和实时评分共用
+            let scorer = CompositionScorer()
+            var bestScore = -1
+            var bestData: Data?
+
+            for item in photos {
+                guard let image = UIImage(data: item.data),
+                      let cgImage = image.cgImage else { continue }
+                let score = scorer.evaluate(cgImage: cgImage, orientation: .up).total
+                if score > bestScore {
+                    bestScore = score
+                    bestData = item.data
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let data = bestData else {
+                    self.isCapturing = false
+                    self.toast = "拍照失败，请重试"
+                    return
+                }
+                let note = photos.count > 1 ? "已保存最优帧 · \(bestScore) 分" : nil
+                self.savePhotoData(data, note: note)
+            }
+        }
+    }
+
+    private func savePhotoData(_ data: Data, note: String? = nil) {
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
             guard status == .authorized || status == .limited else {
                 DispatchQueue.main.async {
@@ -196,7 +274,11 @@ final class CameraController: NSObject, ObservableObject {
                 request.addResource(with: .photo, data: data, options: nil)
             } completionHandler: { success, _ in
                 DispatchQueue.main.async {
-                    self?.toast = success ? "已保存到相册" : "保存失败，请重试"
+                    if success {
+                        self?.toast = note ?? "已保存到相册"
+                    } else {
+                        self?.toast = "保存失败，请重试"
+                    }
                     self?.isCapturing = false
                 }
             }
@@ -219,11 +301,37 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         let orientation: CGImagePropertyOrientation = isFrontCamera ? .leftMirrored : .right
         let result = scorer.evaluate(pixelBuffer: pixelBuffer, orientation: orientation)
 
+        // 滤镜预览：有滤镜时才渲染，且降到 12fps，避免持续占满 GPU
+        if filter != .none {
+            let tick = CACurrentMediaTime()
+            if tick - lastFilterRender >= filterInterval {
+                lastFilterRender = tick
+                renderFilteredFrame(pixelBuffer: pixelBuffer, orientation: orientation)
+            }
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.score = result
             self.handleAutoCaptureIfNeeded(score: result.total)
         }
+    }
+
+    /// 把当前帧套上滤镜并渲染成 UIImage 推给预览层。
+    ///
+    /// 在 videoQueue 上执行；缩放后再渲染，单帧成本可控。
+    private func renderFilteredFrame(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
+        let source = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+        let filtered = filter.apply(to: source)
+
+        let extent = filtered.extent
+        guard extent.width > 1, extent.height > 1 else { return }
+
+        let scale = min(1.0, previewMaxDimension / max(extent.width, extent.height))
+        let scaled = filtered.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+
+        guard let cgImage = ciContext.createCGImage(scaled, from: scaled.extent) else { return }
+        frameSubject.send(UIImage(cgImage: cgImage))
     }
 
     /// 自动构图快门：连续若干帧达标，且当前帧是滚动窗口内的最优帧时才拍。
@@ -258,12 +366,16 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
                      didFinishProcessingPhoto photo: AVCapturePhoto,
                      error: Error?) {
         guard error == nil, let data = photo.fileDataRepresentation() else {
-            DispatchQueue.main.async { [weak self] in
-                self?.toast = "拍照失败，请重试"
-                self?.isCapturing = false
-            }
+            // 单帧失败不致命：其余帧仍可能成功，交给超时兜底结算
             return
         }
-        savePhotoData(data)
+        let id = photo.resolvedSettings.uniqueID
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.burstResolved else { return }
+            self.burstPhotos.append((id, data))
+            if self.burstPhotos.count >= self.burstCount {
+                self.finishBurst()
+            }
+        }
     }
 }
