@@ -15,6 +15,10 @@ struct ContentView: View {
                 CameraPreview(session: camera.session, mirrored: camera.isFrontCamera)
                     .ignoresSafeArea()
 
+                ThirdsGrid()
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+
                 VStack(spacing: 0) {
                     scorePanel
                         .padding(.horizontal, 20)
@@ -233,6 +237,31 @@ struct ContentView: View {
             return Color(red: 0.98, green: 0.79, blue: 0.36)
         default:
             return Color(red: 0.96, green: 0.48, blue: 0.40)
+        }
+    }
+}
+
+/// 三分构图辅助线。
+///
+/// 比分数直观得多——分数告诉你「好不好」，网格告诉你「该放哪」。
+/// 主体压在线交点上，通常就是及格构图。
+private struct ThirdsGrid: View {
+    var body: some View {
+        GeometryReader { geo in
+            Path { path in
+                let w = geo.size.width
+                let h = geo.size.height
+                for i in 1...2 {
+                    let x = w * CGFloat(i) / 3.0
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: h))
+
+                    let y = h * CGFloat(i) / 3.0
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: w, y: y))
+                }
+            }
+            .stroke(Color.white.opacity(0.20), lineWidth: 0.7)
         }
     }
 }

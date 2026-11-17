@@ -20,15 +20,17 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var isCapturing = false
     @Published var autoCaptureEnabled = false {
         didSet {
-            if !autoCaptureEnabled { consecutiveGood = 0 }
+            if !autoCaptureEnabled { recentScores.removeAll() }
         }
     }
     @Published var toast: String?
 
     /// 自动快门阈值
     var autoCaptureThreshold = 85
-    /// 连续多少帧达标才触发，避免抖动误拍
-    private let autoCaptureStreak = 4
+    /// 连续多少帧达标才认为「构图稳定」
+    private let stableFrames = 4
+    /// 滚动窗口长度，用于在窗口内挑最高分那一帧
+    private let scoreWindow = 8
 
     let session = AVCaptureSession()
 
@@ -44,7 +46,8 @@ final class CameraController: NSObject, ObservableObject {
     private var isConfigured = false
     private var lastAnalysisTime: CFTimeInterval = 0
     private var lastCaptureTime: CFTimeInterval = 0
-    private var consecutiveGood = 0
+    /// 最近若干帧的分数，用于「稳定判定 + 窗口取最优」
+    private var recentScores: [Int] = []
 
     /// 分析节流间隔（秒）。每帧都推理会明显发热掉帧。
     private let analysisInterval: CFTimeInterval = 0.22
@@ -223,20 +226,27 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
     }
 
+    /// 自动构图快门：连续若干帧达标，且当前帧是滚动窗口内的最优帧时才拍。
+    ///
+    /// 只看「达标」会在手抖抖动时误拍；取窗口最优能让快门落在构图最好的那一刻，
+    /// 而不是刚跨过阈值的那一帧。
     private func handleAutoCaptureIfNeeded(score: Int) {
-        guard autoCaptureEnabled, !isCapturing else {
-            consecutiveGood = 0
-            return
+        recentScores.append(score)
+        if recentScores.count > scoreWindow {
+            recentScores.removeFirst()
         }
-        if score >= autoCaptureThreshold {
-            consecutiveGood += 1
-            if consecutiveGood >= autoCaptureStreak {
-                consecutiveGood = 0
-                capturePhoto()
-            }
-        } else {
-            consecutiveGood = 0
-        }
+
+        guard autoCaptureEnabled, !isCapturing else { return }
+        guard recentScores.count >= stableFrames else { return }
+
+        let tail = recentScores.suffix(stableFrames)
+        guard tail.allSatisfy({ $0 >= autoCaptureThreshold }) else { return }
+
+        // 必须是窗口内最高分：等构图「到顶」再按，而不是刚够线就按
+        guard let peak = recentScores.max(), score >= peak else { return }
+
+        recentScores.removeAll()
+        capturePhoto()
     }
 }
 
