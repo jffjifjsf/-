@@ -112,8 +112,8 @@ struct ContentView: View {
 
     private var hintBar: some View {
         VStack(spacing: 6) {
-            ForEach(Array(camera.score.hints.enumerated()), id: \.offset) { item in
-                Text(item.element)
+            ForEach(camera.score.hints.indices, id: \.self) { index in
+                Text(camera.score.hints[index])
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
