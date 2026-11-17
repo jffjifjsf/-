@@ -1,0 +1,8 @@
+# 统一用 LF，避免 Windows 下 CRLF 混入仓库
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ipa binary
+*.p12 binary
+*.mobileprovision binary

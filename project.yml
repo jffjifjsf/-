@@ -1,0 +1,44 @@
+name: GuangYing
+
+options:
+  bundleIdPrefix: com.local
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+  GuangYing:
+    type: application
+    platform: iOS
+    sources:
+      - path: GuangYing
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.guangying
+        PRODUCT_NAME: GuangYing
+        INFOPLIST_FILE: GuangYing/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    info:
+      path: GuangYing/Info.plist
+      properties:
+        CFBundleDisplayName: 光影评分
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIUserInterfaceStyle: Dark
+        NSCameraUsageDescription: 需要使用后置或前置相机实时评估构图，并在你按下快门时拍照。
+        NSPhotoLibraryAddUsageDescription: 需要把拍好的照片直接保存到你的相册。
+        NSPhotoLibraryUsageDescription: 需要访问相册以便你查看已保存的照片。

@@ -1,0 +1,61 @@
+name: Build unsigned IPA
+
+# 产出未签名 .ipa，供 Sideloadly / AltStore 用你自己的证书签装。
+# 全程不需要 Mac：在 GitHub 的 macOS runner 上跑。
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project GuangYing.xcodeproj \
+            -scheme GuangYing \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -archivePath build/GuangYing.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            archive
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          mkdir -p build/Payload
+          cp -R build/GuangYing.xcarchive/Products/Applications/GuangYing.app build/Payload/
+          cd build
+          zip -qry GuangYing-unsigned.ipa Payload
+          ls -lh GuangYing-unsigned.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuangYing-unsigned-ipa
+          path: build/GuangYing-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
